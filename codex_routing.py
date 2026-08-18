@@ -12,10 +12,10 @@ from __future__ import annotations
 # ChatGPT Codex OAuth exposes provider-enforced context windows that can be
 # materially lower than the same model slug on direct OpenAI/OpenRouter routes.
 # Hermes Agent resolves these from chatgpt.com/backend-api/codex/models, with
-# this table as its fallback. LCM sees only the host-advertised context_length;
-# when that value was explicitly overridden above the real Codex OAuth window,
-# we still have to budget against the effective provider window or compaction
-# fires too late and provider requests can overflow.
+# this table as its fallback. The GPT-5.6 catalogue still advertises a stale
+# lower limit, but the Codex Responses route was live-verified above 900K input
+# tokens in August 2026. Use 900K rather than the nominal 1.05M API window to
+# preserve output headroom and match current Hermes core policy.
 _CODEX_OAUTH_CONTEXT_CAPS: dict[str, int] = {
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
@@ -26,7 +26,7 @@ _CODEX_OAUTH_CONTEXT_CAPS: dict[str, int] = {
     "gpt-5.5": 272_000,
     "gpt-5.4": 272_000,
     "gpt-5.2": 272_000,
-    "gpt-5.6": 372_000,
+    "gpt-5.6": 900_000,
     "gpt-5": 272_000,
 }
 
