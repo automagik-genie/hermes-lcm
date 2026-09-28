@@ -21,6 +21,7 @@ from .answer_contract import (
     EvidenceSlot,
     compile_answer_contract,
 )
+from . import jev_candidates
 from .occurrence_time import resolve_occurrence_time
 from .reasoning import (
     EvidencePlan,
@@ -189,8 +190,16 @@ def _tokens(value: Any) -> set[str]:
     return {token.casefold() for token in _TOKEN_RE.findall(str(value or ""))}
 
 
-def _estimate_tokens(value: str) -> int:
-    return max(1, math.ceil(len(value) / 4)) if value else 0
+def _estimate_tokens(value: Any) -> int:
+    """The one context estimator, delegated to the shared implementation.
+
+    This is deliberately *not* a second copy of the formula: the advisory
+    preflight and this module's added-context budget must agree about the same
+    string by construction, not by two copies happening to match.
+    ``jev_candidates`` imports only the standard library, so the delegation
+    introduces no import cycle.
+    """
+    return jev_candidates.estimate_context_tokens(value)
 
 
 def _raw_quote(raw: Any) -> str:
@@ -2008,6 +2017,46 @@ def _record_baseline_fact(
     )
 
 
+def _deliver_jev_advisory(
+    result: dict[str, Any], jev_record: dict[str, Any], *, budget_tokens: int
+) -> None:
+    """Deliver a ready advisory ordering block, or leave the context untouched.
+
+    ``advisory_applied`` is set only when the ordered block really becomes the
+    caller's added context -- not when a provider response merely arrives.  The
+    deterministic verdict in ``result`` is not touched here, and ``applied`` --
+    the answer-promotion authority -- is never set: an ordering is not a claim.
+    """
+    advisory = jev_record.get("advisory")
+    if jev_record.get("status") != "ok" or not isinstance(advisory, Mapping):
+        return
+    if advisory.get("status") != "ready" or not advisory.get("pool_complete"):
+        return
+    context = advisory.get("context")
+    if not isinstance(context, str) or not context:
+        return
+    if _estimate_tokens(context) > int(budget_tokens):
+        # The adapter already refused an over-budget block before dispatch; this
+        # second check keeps the delivery honest if the render ever changes.
+        jev_record["reason_code"] = "advisory_context_budget_exceeded"
+        if isinstance(advisory, dict):
+            advisory["status"] = "rejected"
+            advisory["reason_code"] = "advisory_context_budget_exceeded"
+            advisory["context"] = None
+        return
+    result["context"] = context
+    jev_record["advisory_applied"] = True
+    result["provenance"].update(
+        {
+            "transport": "typesafe_jev",
+            "provider": "typesafe",
+            "model": str(jev_record.get("response_model") or jev_record.get("model")),
+            "jev_calls": int(jev_record.get("calls") or 0),
+            "jev_mode": "advisory",
+        }
+    )
+
+
 def compile_preanswer_evidence(
     question: Any,
     *,
@@ -2019,8 +2068,15 @@ def compile_preanswer_evidence(
     enabled: bool = False,
     render_baseline_context: bool = False,
     budgets: Mapping[str, Any] | None = None,
+    jev: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compile one bounded exact evidence brief or return an unchanged baseline."""
+    """Compile one bounded exact evidence brief or return an unchanged baseline.
+
+    ``jev`` is the optional, default-off TypeSafe Jev candidate options mapping
+    from :func:`hermes_lcm.jev_candidates.resolve_jev_options`.  Absent or
+    disabled it performs no provider call and changes nothing.  See
+    ``jev_candidates`` for the fixed scope, budget and fallback rules.
+    """
     started = time.perf_counter()
     limits = _budgets(budgets)
     as_of = question_as_of if question_as_of is not None else question_date
@@ -2222,6 +2278,76 @@ def compile_preanswer_evidence(
             "hydrated_candidates": len(all_sources),
         }
     )
+    # Optional R20 seam (catalog: requirements candidate rerank and advisory
+    # ordering).  It runs only where every deterministic path above produced
+    # nothing, so a provider problem can never displace a baseline answer.  The
+    # provider may only name a code-owned option id.
+    #
+    # ``applied`` is retained exactly as reviewed: the unchanged selectors
+    # re-decide afterwards, and a narrowing is promoted only when it proves
+    # semantic uniqueness instead of hiding a competing alternative.
+    #
+    # ``advisory`` cannot narrow anything.  It orders the complete revalidated
+    # pool inside its own delivered block and leaves ``candidates``, ``reason``
+    # and every deterministic field exactly as this function computed them.
+    jev_applied = False
+    if direct is None and computation is None and isinstance(jev, Mapping) and jev.get("enabled"):
+        pool_before = candidates
+        reason_before = reason
+        jev_record = jev_candidates.rerank_candidates(
+            str(question),
+            contract=contract,
+            candidates=pool_before,
+            options=jev,
+            reason_code=reason_before,
+            as_of=as_of,
+            advisory_context_budget_tokens=limits.max_added_context_tokens,
+            revalidate=lambda candidate: _normalize_ref(
+                candidate, engine=engine, origin="baseline"
+            )
+            is not None,
+        )
+        result["jev"] = jev_record
+        if jev_record["mode"] == jev_candidates.JEV_ADVISORY_MODE:
+            _deliver_jev_advisory(
+                result, jev_record, budget_tokens=limits.max_added_context_tokens
+            )
+        # ``refused`` is terminal: the model's choice stays recorded as a shadow
+        # decision, the pool and the baseline reason are untouched, and the
+        # consumer still sees the deterministic ambiguity.
+        if jev_record["status"] == "ok" and jev_record["mode"] == "applied":
+            narrowed = jev_candidates.apply_slot_choices(
+                pool_before,
+                contract,
+                jev_record["choices"],
+                limits=jev_record["limits"],
+            )
+            if narrowed is None:
+                jev_record["status"] = "revalidation_failed"
+                jev_record["reason_code"] = "product_revalidation_failed"
+            else:
+                candidates = narrowed
+                direct, computation, selected, reason = attempt()
+                if direct is not None or computation is not None:
+                    jev_applied = True
+                    reason = "jev_candidate_rerank_applied"
+                    jev_record["status"] = "applied"
+                    jev_record["applied"] = True
+                    if direct is not None and render_baseline_context:
+                        # Same product rule as a baseline direct fact: render the
+                        # bounded fact only when the host has no baseline bytes.
+                        _record_baseline_fact(
+                            result, direct, contract, render_context=True
+                        )
+                else:
+                    candidates = pool_before
+                    reason = reason_before
+                    jev_record["status"] = "revalidation_failed"
+                    jev_record["reason_code"] = "no_unique_candidate_after_choice"
+        if not jev_applied and jev_record["mode"] != jev_candidates.JEV_ADVISORY_MODE:
+            candidates = pool_before
+            reason = reason_before
+
     if direct is None and computation is None:
         result["reason_code"] = reason
         return _finish(result, started=started)

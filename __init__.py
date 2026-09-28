@@ -182,6 +182,7 @@ def _pre_llm_context(active_engine, recall_policy: str, payload: dict) -> dict:
         if mode == "requirements_v1":
             from .answer_contract import compile_answer_contract
             from .evidence_compiler import compile_preanswer_evidence
+            from .jev_candidates import resolve_jev_options
 
             contract = compile_answer_contract(question, question_date)
             if contract.status != "planned":
@@ -200,6 +201,9 @@ def _pre_llm_context(active_engine, recall_policy: str, payload: dict) -> dict:
                 ),
                 enabled=True,
                 render_baseline_context=baseline_was_internal,
+                # Default-off: resolves to ``off`` unless the Jev flag is set, so
+                # an unconfigured runtime makes no provider call here.
+                jev=resolve_jev_options(config),
             )
             try:
                 active_engine._last_preanswer_evidence_trace = result

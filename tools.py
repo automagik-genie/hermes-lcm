@@ -887,6 +887,9 @@ def lcm_compile_evidence(args: Dict[str, Any], **kwargs) -> str:
     if mode not in {"proposal", "auto"}:
         return json.dumps({"error": "mode must be one of: proposal, auto"})
     if mode == "auto":
+        # Lazy import preserves the plugin's order-independent module bootstrap.
+        from .jev_candidates import resolve_jev_options
+
         result = compile_preanswer_evidence(
             args.get("question"),
             engine=engine,
@@ -895,6 +898,8 @@ def lcm_compile_evidence(args: Dict[str, Any], **kwargs) -> str:
             retrieve=lambda recall_args: lcm_recall(recall_args, engine=engine),
             enabled=True,
             budgets=args.get("budgets"),
+            # Default-off: resolves to ``off`` unless the Jev flag is set.
+            jev=resolve_jev_options(getattr(engine, "_config", None)),
         )
         return json.dumps(result, ensure_ascii=False)
 

@@ -381,6 +381,9 @@ ENV_FIELD_SPECS: tuple[_EnvFieldSpec, ...] = (
     _EnvFieldSpec("proactive_recall_provider", "LCM_PROACTIVE_RECALL_PROVIDER", str),
     _EnvFieldSpec("preanswer_evidence_enabled", "LCM_PREANSWER_EVIDENCE_ENABLED", bool),
     _EnvFieldSpec("preanswer_evidence_mode", "LCM_PREANSWER_EVIDENCE_MODE", str),
+    _EnvFieldSpec("jev_candidate_rerank_enabled", "LCM_JEV_CANDIDATE_RERANK_ENABLED", bool),
+    _EnvFieldSpec("jev_candidate_rerank_mode", "LCM_JEV_CANDIDATE_RERANK_MODE", str),
+    _EnvFieldSpec("jev_candidate_rerank_model", "LCM_JEV_CANDIDATE_RERANK_MODEL", str),
     _EnvFieldSpec("selective_compiler_enabled", "LCM_SELECTIVE_COMPILER_ENABLED", bool),
     _EnvFieldSpec("selective_compiler_model", "LCM_SELECTIVE_COMPILER_MODEL", str),
     _EnvFieldSpec("embedding_bounded_scan_rows", "LCM_EMBEDDING_BOUNDED_SCAN_ROWS", int),
@@ -698,6 +701,16 @@ class LCMConfig:
     # off | legacy_selective | requirements_v1. The master flag remains the
     # default-off activation boundary.
     preanswer_evidence_mode: str = ""
+    # Optional TypeSafe Jev adapter over the requirements candidate seam.
+    # Default-off; the flag is the activation boundary and the master pre-answer
+    # mode is independent. Modes: ``off`` | ``shadow`` (measure only) |
+    # ``applied`` (narrowing, refused unless semantic uniqueness is proven) |
+    # ``advisory`` (presentation ordering of the complete revalidated pool,
+    # never a narrowing). An unrecognized mode resolves to ``off``, so no
+    # configuration can enable Jev by typo. See ``jev_candidates``.
+    jev_candidate_rerank_enabled: bool = False
+    jev_candidate_rerank_mode: str = ""
+    jev_candidate_rerank_model: str = ""
     # Optional minimal semantic selector for code-derived closed operations.
     # It is independent and default-off; enabling pre-answer evidence alone
     # still performs only the provider-free session-bundle path.
